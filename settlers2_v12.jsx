@@ -1003,16 +1003,17 @@ export default function Settlers2(){
     //   t2 (USD): node(col,row) → node(col+1,row) → node(col+1,row-1) - right triangle
     for(let row=0;row<ROWS;row++) for(let col=0;col<COLS;col++){
       const t=g.map[row][col];
-      const pat=tp[t];
+      const pat=(t===T.WATER)?null:tp[t];
       const n0=iH(col,row);
       const fallback=TC[t]?TC[t][0]:TC[T.GRASS][0];
+      const fill=pat||(t===T.WATER?'#1e6ea8':fallback);
 
       // Triangle t1: this → below-left → below-right
       if(row<ROWS-1 && col<COLS-1){
         const n1=iH(col,row+1), n2=iH(col+1,row);
         ctx.beginPath();
         ctx.moveTo(n0.x,n0.y);ctx.lineTo(n1.x,n1.y);ctx.lineTo(n2.x,n2.y);ctx.closePath();
-        ctx.fillStyle=pat||fallback;ctx.fill();
+        ctx.fillStyle=fill;ctx.fill();
       }
 
       // Triangle t2: this → below-right → right
@@ -1020,7 +1021,7 @@ export default function Settlers2(){
         const n1=iH(col+1,row), n2=iH(col+1,row-1);
         ctx.beginPath();
         ctx.moveTo(n0.x,n0.y);ctx.lineTo(n1.x,n1.y);ctx.lineTo(n2.x,n2.y);ctx.closePath();
-        ctx.fillStyle=pat||fallback;ctx.fill();
+        ctx.fillStyle=fill;ctx.fill();
       }
     }
     ctx.imageSmoothingEnabled=true;
@@ -1034,7 +1035,6 @@ export default function Settlers2(){
       // Diamond path for overlays
       const diamond=()=>{ctx.beginPath();ctx.moveTo(x,y-TH/2);ctx.lineTo(x+TW/2,y);ctx.lineTo(x,y+TH/2);ctx.lineTo(x-TW/2,y);ctx.closePath();};
 
-      if(inT){diamond();ctx.fillStyle="rgba(100,180,255,0.07)";ctx.fill();}
       if(roadTiles.has(`${col},${row}`)){diamond();ctx.fillStyle="rgba(160,120,60,0.35)";ctx.fill();}
       if(roadMode && roadMode.path.find(p=>p.col===col&&p.row===row)){diamond();ctx.fillStyle="rgba(255,200,80,0.3)";ctx.fill();}
       if(inT){const edges=[[0,-1,0,1],[1,0,1,2],[0,1,2,3],[-1,0,3,0]];

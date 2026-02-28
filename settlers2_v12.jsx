@@ -1448,8 +1448,11 @@ export default function Settlers2(){
     }
   },[]);
 
-  const onMouseUp=useCallback(()=>{
-    if(dragRef.current.active) dragRef.current.wasDragging=true;
+  const onMouseUp=useCallback((e)=>{
+    if(dragRef.current.active){
+      const dist=Math.hypot(e.clientX-dragRef.current.startX,e.clientY-dragRef.current.startY);
+      if(dist>5) dragRef.current.wasDragging=true;
+    }
     dragRef.current.active=false;
   },[]);
   const onMouseLeave=useCallback(()=>{dragRef.current.active=false;},[]);
@@ -1460,7 +1463,6 @@ export default function Settlers2(){
     const r=cvRef.current.getBoundingClientRect();
     const{ox,oy}=getOxOy();
     const sx=e.clientX-r.left,sy=e.clientY-r.top;
-    const mx=sx,my=sy; // screen-space (used below for popup positioning checks)
     // Minimap click-to-navigate
     const mmX=CANVAS_W-MINIMAP_W-MINIMAP_MARGIN;
     const mmY=CANVAS_H-MINIMAP_H-MINIMAP_MARGIN;
@@ -1495,7 +1497,7 @@ export default function Settlers2(){
           if(f) {
             const fIso = nodeIso(f.col,f.row,ox,oy,g.heights);
             const fSc=worldToScreen(fIso.x,fIso.y,viewport);
-            if(my < fSc.sy && Math.abs(mx - fSc.sx) < TW/2*viewport.scale) { targetFlag = f; break; }
+            if(sy < fSc.sy && Math.abs(sx - fSc.sx) < TW/2*viewport.scale) { targetFlag = f; break; }
           }
         }
       }
@@ -1566,7 +1568,7 @@ export default function Settlers2(){
           const fIso = nodeIso(f.col,f.row,ox,oy,g.heights);
           const fSc=worldToScreen(fIso.x,fIso.y,viewport);
           // Only snap if click is above the flag center (clicking on pennant)
-          if(my < fSc.sy && Math.abs(mx - fSc.sx) < TW/2*viewport.scale) { clickedFlag = f; break; }
+          if(sy < fSc.sy && Math.abs(sx - fSc.sx) < TW/2*viewport.scale) { clickedFlag = f; break; }
         }
       }
     }

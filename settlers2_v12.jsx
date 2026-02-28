@@ -53,9 +53,80 @@ const LS={
   road_flag:[13,0,10,9,3,8],
 };
 
-const TW=64,TH=36,COLS=16,ROWS=14,TICK_MS=200,PROD_TICKS=4,HQ_RAD=4,MIL_RAD=3;
+const TW=64,TH=36,TICK_MS=200,PROD_TICKS=4,HQ_RAD=4,MIL_RAD=3;
+let COLS=16,ROWS=14;
 const HEIGHT_FACTOR=5;
 const T={GRASS:0,FOREST:1,MOUNTAIN:2,WATER:3,SAND:4,MEADOW:5};
+
+// ── WLD map loader helpers ──────────────────────────────────────────
+function mapTerrain(id){
+  if([1,11,12,13,34].includes(id)) return 'mountain';
+  if(id===2) return 'snow';
+  if([3,5,6,16,19,22].includes(id)) return 'water';
+  return 'grass';
+}
+function decodeResource(byte){
+  if(byte===0x21) return{type:'water',amount:1};
+  if(byte===0x87) return{type:'fish',amount:1};
+  const amount=byte&0x07,kind=byte&0xF8;
+  if(kind===0x40) return{type:'coal',amount};
+  if(kind===0x48) return{type:'ironOre',amount};
+  if(kind===0x50) return{type:'gold',amount};
+  if(kind===0x58) return{type:'granite',amount};
+  return null;
+}
+function decodeObject(indexByte,typeByte){
+  if(indexByte>=0xC4&&indexByte<=0xC6){
+    const species=['pine','birch','oak','palm','pine2','fir','cypress','cherry'][typeByte&0x07];
+    const size=(typeByte>>3)&0x07;
+    return{kind:'tree',species,size};
+  }
+  if(indexByte>=0xCC&&indexByte<=0xCE) return{kind:'granite',size:indexByte-0xCC};
+  return null;
+}
+function parseWLDMap(arrayBuffer){
+  const dv=new DataView(arrayBuffer);
+  let offset=0;
+  const fileId=String.fromCharCode(...new Uint8Array(arrayBuffer,0,10));
+  if(fileId!=='WORLD_V1.0') throw new Error('Not a valid Settlers II map file');
+  offset=10;
+  let title='';
+  while(dv.getUint8(offset)!==0) title+=String.fromCharCode(dv.getUint8(offset++));
+  offset++;
+  const terrainType=dv.getUint8(offset++);
+  const playerCount=dv.getUint8(offset++);
+  const hqPositions=[];
+  for(let i=0;i<7;i++){
+    const x=dv.getUint16(offset,true),y=dv.getUint16(offset+2,true);
+    offset+=4;
+    if(x!==0xFFFF&&y!==0xFFFF&&!(x===0&&y===0)) hqPositions.push({x,y});
+  }
+  offset=2352;
+  const width=dv.getUint16(offset,true);offset+=2;
+  const height=dv.getUint16(offset,true);offset+=4;
+  const nodeCount=width*height;
+  const blocks=[];
+  for(let b=0;b<14;b++){
+    const blockLen=dv.getUint32(offset+4,true);
+    offset+=16;
+    blocks.push(new Uint8Array(arrayBuffer,offset,blockLen));
+    offset+=blockLen;
+  }
+  const nodes=[];
+  for(let i=0;i<nodeCount;i++){
+    const texRSU=blocks[1][i],texLSD=blocks[2][i];
+    nodes.push({
+      height:blocks[0][i],
+      terrainRSU:mapTerrain(texRSU&0x3F),
+      terrainLSD:mapTerrain(texLSD&0x3F),
+      harbor:!!(texRSU&0x40)||!!(texLSD&0x40),
+      buildQuality:(blocks[8][i]<=5?blocks[8][i]:0),
+      object:decodeObject(blocks[4][i],blocks[5][i]),
+      resource:decodeResource(blocks[11][i]),
+    });
+  }
+  return{width,height,nodes,terrainType,title,playerCount,hqPositions};
+}
 const TC={
   [T.GRASS]:["#5c8a2e","#548227","#4c7a22"],
   [T.FOREST]:["#3d6b22","#35631c","#2d5b16"],
@@ -141,9 +212,20 @@ const TF={pine:["pine","pine_f1","pine_f2","pine_f3"],birch:["birch","birch_f1",
 function treeFor(c,r){return TREES[((c*7+r*13+c*r)&0x7FFFFFFF)%TREES.length];}
 function treeFrame(type,tick){const f=TF[type]||[type];return f[tick%f.length];}
 
-function getBuildQuality(col,row,map,buildings,territory,flags){
+function getBuildQuality(col,row,map,buildings,territory,flags,bqMap){
   if(!territory.has(`${col},${row}`)) return null;
   if(buildings.find(b=>b.col===col&&b.row===row)) return null;
+  if(bqMap&&bqMap[row]&&bqMap[row][col]!==undefined){
+    const bqVal=bqMap[row][col];
+    if(flags&&flags.find(f=>f.col===col&&f.row===row)) return "flag";
+    if(bqVal===0) return null;
+    if(bqVal===1) return "flag";
+    if(bqVal===2) return "hut";
+    if(bqVal===3) return "house";
+    if(bqVal===4) return "castle";
+    if(bqVal===5) return "mine";
+    return null;
+  }
   const t=map[row]?.[col];
   if(t===T.WATER) return null;
   if(t===T.MOUNTAIN) return "mine";
@@ -1185,7 +1267,7 @@ export default function Settlers2(){
       const hasBldg=g.buildings.find(b=>b.col===col&&b.row===row);
       if(!hasFlag&&!hasBldg){
         const{x,y}=iH(col,row);
-        const bq=getBuildQuality(col,row,g.map,g.buildings,g.territory,g.flags);
+        const bq=getBuildQuality(col,row,g.map,g.buildings,g.territory,g.flags,g.wldBQ);
         if(bq){
           const key={flag:"bq_flag",hut:"bq_hut",house:"bq_house",castle:"bq_castle",mine:"bq_mine"}[bq];
           const sp=LS[key];if(sp) drawSp(comb,sp,x,y);
@@ -1357,7 +1439,7 @@ export default function Settlers2(){
       setMsg(`${d.n}${d.p?" — produces "+d.p:""}${isConn?"":" ⚠ NOT CONNECTED — build a road!"}`);return;}
 
     // ── Check BQ for building placement ──────────────────────
-    const bq=getBuildQuality(col,row,g.map,g.buildings,g.territory,g.flags);
+    const bq=getBuildQuality(col,row,g.map,g.buildings,g.territory,g.flags,g.wldBQ);
     if(!bq){
       if(!g.territory.has(`${col},${row}`)) setMsg("Outside your territory.");
       else setMsg("Cannot build here.");
@@ -1441,6 +1523,42 @@ export default function Settlers2(){
     setMsg("Road building mode: click a destination flag to auto-route. ESC to cancel.");
   },[]);
 
+  // ── Load WLD map ────────────────────────────────────────────────
+  const loadMap=useCallback((parsedMap)=>{
+    const g=gs.current;if(!g) return;
+    const{width,height,nodes,title}=parsedMap;
+    COLS=width;ROWS=height;
+    const newMap=Array.from({length:height},()=>Array.from({length:width},()=>T.GRASS));
+    const newHeights=Array.from({length:height},()=>Array.from({length:width},()=>0));
+    const newBQ=Array.from({length:height},()=>Array.from({length:width},()=>0));
+    for(let row=0;row<height;row++) for(let col=0;col<width;col++){
+      const node=nodes[row*width+col];
+      newHeights[row][col]=Math.round(node.height/HEIGHT_FACTOR);
+      const obj=node.object;
+      if(obj&&obj.kind==='tree') newMap[row][col]=T.FOREST;
+      else if(node.terrainRSU==='mountain') newMap[row][col]=T.MOUNTAIN;
+      else if(node.terrainRSU==='water'||node.terrainRSU==='snow') newMap[row][col]=T.WATER;
+      else newMap[row][col]=T.GRASS;
+      newBQ[row][col]=node.buildQuality;
+    }
+    const hqPos=parsedMap.hqPositions[0]||{x:Math.floor(width/2),y:Math.floor(height/2)};
+    const hx=hqPos.x,hy=hqPos.y;
+    const ter=new Set();
+    for(let dy=-HQ_RAD;dy<=HQ_RAD;dy++) for(let dx=-HQ_RAD;dx<=HQ_RAD;dx++){
+      if(Math.abs(dx)+Math.abs(dy)<=HQ_RAD+1){const nx=hx+dx,ny=hy+dy;
+        if(nx>=0&&nx<COLS&&ny>=0&&ny<ROWS) ter.add(`${nx},${ny}`);}}
+    const goods={};GOODS.forEach(k=>goods[k]=0);
+    goods.boards=6;goods.stones=6;goods.wood=4;goods.bread=2;goods.water=2;
+    const hqFlag={id:0,col:Math.min(hx+1,width-1),row:hy,buildingIdx:0,goods:[]};
+    g.map=newMap;g.heights=newHeights;g.wldBQ=newBQ;
+    g.buildings=[{type:"hq",col:hx,row:hy,timer:0,flagId:0}];
+    g.territory=ter;g.goods=goods;g.tick=0;
+    g.flags=[hqFlag];g.roads=[];g.nextFlagId=1;
+    g.figures=[];g.nextFigId=0;
+    setMsg(`Loaded: ${title||'WLD Map'} (${width}\u00d7${height})`);
+    fu(n=>n+1);
+  },[]);
+
   // ── Keyboard handler (ESC to cancel road mode) ─────────────────
   useEffect(()=>{
     const handler=e=>{
@@ -1482,7 +1600,7 @@ export default function Settlers2(){
         const hFlag = g.flags.find(f=>f.col===hover.col&&f.row===hover.row);
         if(hFlag) { hoverLabel = "Flag — click to build road"; }
         else {
-          const bq=getBuildQuality(hover.col,hover.row,g.map,g.buildings,g.territory,g.flags);
+          const bq=getBuildQuality(hover.col,hover.row,g.map,g.buildings,g.territory,g.flags,g.wldBQ);
           const labels={flag:"Place flag",hut:"Small building",house:"Medium building",castle:"Large building",mine:"Mine"};
           hoverLabel=bq?labels[bq]||"":"";
         }
@@ -1510,6 +1628,23 @@ export default function Settlers2(){
               background:"rgba(60,50,30,0.7)",borderRadius:3,whiteSpace:"nowrap"}}>
               <b style={{color:"#e8d8a0"}}>{g.goods[r]}</b> {r.replace(/_/g," ")}</div>))}
           <div style={{marginLeft:"auto",fontSize:10,color:"#6a6040"}}>Tick {Math.floor((g?.tick||0)/PROD_TICKS)}</div>
+          <button onClick={()=>{
+            const input=document.createElement('input');
+            input.type='file';input.accept='.wld,.swd,.WLD,.SWD';
+            input.onchange=(e)=>{
+              const file=e.target.files[0];if(!file) return;
+              const reader=new FileReader();
+              reader.onload=(ev)=>{
+                try{loadMap(parseWLDMap(ev.target.result));}
+                catch(err){alert('Failed to load map: '+err.message);}
+              };
+              reader.readAsArrayBuffer(file);
+            };
+            input.click();
+          }} style={{marginLeft:8,padding:"1px 8px",fontSize:11,background:"linear-gradient(#5a4a28,#4a3a18)",
+            color:"#e8d8a0",border:"1px solid #7a6a40",borderRadius:3,cursor:"pointer"}}>
+            📂 Load Map (.WLD)
+          </button>
         </div>
         {/* Canvas */}
         <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",

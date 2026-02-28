@@ -101,16 +101,20 @@ function parseWLDMap(arrayBuffer){
     offset+=4;
     if(x!==0xFFFF&&y!==0xFFFF&&!(x===0&&y===0)) hqPositions.push({x,y});
   }
-  offset=2352;
+  // Header ends with: uint16 0x2711 sig, uint32 unknown=0, uint16 width, uint16 height
+  // Normal maps: sig at byte 2342 → width at 2348; some buggy maps have an extra uint16=0 before sig (hasExtraWord)
+  offset=(dv.getUint16(2342,true)===0x2711)?2348:2350;
   const width=dv.getUint16(offset,true);offset+=2;
   const height=dv.getUint16(offset,true);offset+=2;
+  console.log(`[WLD] File size: ${arrayBuffer.byteLength}, reading dimensions at offset ${offset-4}: ${width}×${height}`);
   if(width===0||height===0||width>512||height>512||width%16!==0||height%16!==0){
-    throw new Error(`Invalid map dimensions: ${width}×${height}. Expected multiples of 16 up to 512.`);
+    throw new Error(`Invalid map dimensions: ${width}×${height} (read at file offset ${offset-4}). Expected multiples of 16 up to 512.`);
   }
   const nodeCount=width*height;
   const blocks=[];
   for(let b=0;b<14;b++){
-    const blockLen=dv.getUint32(offset+4,true);
+    // Block sub-header: uint16 id(2) + uint32 unknown(4) + uint16 w(2) + uint16 h(2) + uint16 multiplier(2) + uint32 blockLength(4) = 16 bytes
+    const blockLen=dv.getUint32(offset+12,true);
     if(blockLen>width*height*2){// max 2 bytes per node
       throw new Error(`Block ${b} has invalid length ${blockLen} (map is ${width}×${height} = ${width*height} nodes). File may be corrupt or offset is wrong.`);
     }

@@ -57,6 +57,54 @@ const TW=64,TH=36,TICK_MS=200,PROD_TICKS=4,HQ_RAD=4,MIL_RAD=3;
 const CANVAS_W=960,CANVAS_H=580,SCROLL_STEP=100;
 let COLS=16,ROWS=14;
 const HEIGHT_FACTOR=5;
+
+const VERSION='v0.10';
+
+// Zoom limits
+const ZOOM_MIN=0.25,ZOOM_MAX=2.0,ZOOM_STEP=0.1;
+// Edge scroll
+const EDGE_SIZE=40,EDGE_SPEED=8;
+// Minimap
+const MINIMAP_W=200,MINIMAP_H=100,MINIMAP_MARGIN=12;
+
+// Viewport — single source of truth for camera position and zoom
+const viewport={offsetX:0,offsetY:0,scale:1.0};
+// Track last mouse position for edge scrolling
+const lastMousePos={x:-1,y:-1};
+
+// ── Coordinate conversion ──────────────────────────────────────────
+function screenToWorld(sx,sy,vp){return{wx:sx/vp.scale+vp.offsetX,wy:sy/vp.scale+vp.offsetY};}
+function worldToScreen(wx,wy,vp){return{sx:(wx-vp.offsetX)*vp.scale,sy:(wy-vp.offsetY)*vp.scale};}
+
+// ── Scroll clamping ────────────────────────────────────────────────
+function clampOffset(value,axis){
+  const isoW=(COLS+ROWS)*TW/2,isoH=(COLS+ROWS)*TH/2;
+  const viewW=CANVAS_W/viewport.scale,viewH=CANVAS_H/viewport.scale;
+  const margin=viewW/2;
+  if(axis==='x') return Math.max(-margin,Math.min(value,Math.max(-margin,isoW-margin)));
+  if(axis==='y') return Math.max(-viewH/2,Math.min(value,Math.max(-viewH/2,isoH-viewH/2)));
+  return value;
+}
+
+// ── Sprite LOD helpers ─────────────────────────────────────────────
+function shouldDrawSprites(){return viewport.scale>=0.5;}
+function shouldDrawFigures(){return viewport.scale>=0.75;}
+
+function applyEdgeScroll(){
+  const{x:mx,y:my}=lastMousePos;
+  if(mx<0) return false;
+  let dx=0,dy=0;
+  if(mx<EDGE_SIZE)                  dx=-EDGE_SPEED*(1-mx/EDGE_SIZE);
+  if(mx>CANVAS_W-EDGE_SIZE)         dx= EDGE_SPEED*(1-(CANVAS_W-mx)/EDGE_SIZE);
+  if(my<EDGE_SIZE)                  dy=-EDGE_SPEED*(1-my/EDGE_SIZE);
+  if(my>CANVAS_H-EDGE_SIZE)         dy= EDGE_SPEED*(1-(CANVAS_H-my)/EDGE_SIZE);
+  if(dx!==0||dy!==0){
+    viewport.offsetX=clampOffset(viewport.offsetX+dx/viewport.scale,'x');
+    viewport.offsetY=clampOffset(viewport.offsetY+dy/viewport.scale,'y');
+    return true;
+  }
+  return false;
+}
 const T={GRASS:0,FOREST:1,MOUNTAIN:2,WATER:3,SAND:4,MEADOW:5};
 
 // ── WLD map loader helpers ──────────────────────────────────────────
@@ -552,6 +600,44 @@ function fromIsoH(px,py,ox,oy,heights){
   return{col:bestC,row:bestR};
 }
 
+// ── Minimap ────────────────────────────────────────────────────────
+function minimapNodeColor(node){
+  const t=node?node.terrainRSU??node.terrain??'':'';
+  if(t==='water') return '#3a6eb5';
+  if(t==='mountain') return '#8a7560';
+  if(t==='snow') return '#e8e8e8';
+  return '#4a7c3f';
+}
+
+function drawMinimap(ctx,gameState,vp){
+  const map=gameState&&gameState.map;if(!map) return;
+  const rows=ROWS,cols=COLS;
+  const mmX=CANVAS_W-MINIMAP_W-MINIMAP_MARGIN;
+  const mmY=CANVAS_H-MINIMAP_H-MINIMAP_MARGIN;
+  const scX=MINIMAP_W/cols,scY=MINIMAP_H/rows;
+  // Background
+  ctx.fillStyle='rgba(0,0,0,0.65)';
+  ctx.fillRect(mmX-2,mmY-2,MINIMAP_W+4,MINIMAP_H+4);
+  // Terrain pixels — use map array directly (map[row][col] = terrain int)
+  const T_=map;
+  for(let row=0;row<rows;row++){
+    for(let col=0;col<cols;col++){
+      const t=T_[row]?T_[row][col]:0;
+      if(t===3||t===2) ctx.fillStyle=t===3?'#3a6eb5':'#8a7560'; // water, mountain
+      else ctx.fillStyle='#4a7c3f';
+      ctx.fillRect(mmX+col*scX,mmY+row*scY,Math.max(1,scX),Math.max(1,scY));
+    }
+  }
+  // Viewport rectangle — approximate in iso-space
+  const isoW=(COLS+ROWS)*TW/2,isoH=(COLS+ROWS)*TH/2;
+  const vx=((vp.offsetX+CANVAS_W/2)/isoW)*MINIMAP_W;
+  const vy=((vp.offsetY+CANVAS_H/2)/isoH)*MINIMAP_H;
+  const vw=(CANVAS_W/vp.scale/isoW)*MINIMAP_W;
+  const vh=(CANVAS_H/vp.scale/isoH)*MINIMAP_H;
+  ctx.strokeStyle='rgba(255,255,255,0.85)';ctx.lineWidth=1;
+  ctx.strokeRect(mmX+vx,mmY+vy,vw,vh);
+}
+
 export default function Settlers2(){
   const cvRef=useRef(null),imgRef=useRef({bldg:null,comb:null,fig:{}});
   const[loaded,setLoaded]=useState(false),[tick,setTick]=useState(0);
@@ -583,7 +669,6 @@ export default function Settlers2(){
       territory:ter, goods, tick:0,
       flags:[hqFlag], roads:[], nextFlagId:1,
       figures:[], nextFigId:0,
-      scrollX:0, scrollY:0,
       objects:null,
     };
     setLoaded(true);}};
@@ -948,16 +1033,19 @@ export default function Settlers2(){
         }
       });
 
-      setTick(g.tick);fu(n=>n+1);},TICK_MS);
+      setTick(g.tick);applyEdgeScroll();fu(n=>n+1);},TICK_MS);
     return()=>clearInterval(iv);},[loaded]);
 
   // ── Canvas rendering ───────────────────────────────────────────────
   useEffect(()=>{if(!loaded) return;
     const cv=cvRef.current,ctx=cv.getContext("2d"),g=gs.current;if(!g) return;
     const W=cv.width,H=cv.height;
-    const ox=W/2-(COLS-ROWS)*(TW/4)-(g.scrollX||0),oy=30-(g.scrollY||0);
+    const ox=W/2-(COLS-ROWS)*(TW/4),oy=30;
     const{bldg,comb}=imgRef.current;
     ctx.fillStyle="#1a2810";ctx.fillRect(0,0,W,H);
+    ctx.save();
+    ctx.scale(viewport.scale,viewport.scale);
+    ctx.translate(-viewport.offsetX,-viewport.offsetY);
 
     const drawSp=(atlas,sp,cx,cy)=>{if(!atlas||!sp) return;
       const[sx,sy,sw,sh,onx,ony]=sp;ctx.drawImage(atlas,sx,sy,sw,sh,cx-onx,cy-ony,sw,sh);};
@@ -1320,33 +1408,43 @@ export default function Settlers2(){
       const bqKey={flag:"bq_flag",hut:"bq_hut",house:"bq_house",castle:"bq_castle",mine:"bq_mine"}[popup.bq];
       const sp=LS[bqKey];if(sp) drawSp(comb,sp,x,y);
     }
+    ctx.restore();
+    // Draw minimap (always in screen space, after restore)
+    drawMinimap(ctx,g,viewport);
+    // Version string
+    ctx.font='11px monospace';ctx.fillStyle='rgba(180,180,180,0.7)';
+    ctx.textAlign='right';
+    ctx.fillText(VERSION,cv.width-6,cv.height-6);
+    ctx.textAlign='left';
   },[loaded,tick,hover,popup,flagPopup,roadMode]);
 
   const getOxOy=useCallback(()=>{
     if(!cvRef.current) return{ox:0,oy:0};
-    const g=gs.current;
-    const sx=(g&&g.scrollX)||0,sy=(g&&g.scrollY)||0;
-    return{ox:cvRef.current.width/2-(COLS-ROWS)*(TW/4)-sx,oy:30-sy};
+    return{ox:cvRef.current.width/2-(COLS-ROWS)*(TW/4),oy:30};
   },[]);
 
   const onMove=useCallback(e=>{if(!cvRef.current||!gs.current) return;
     const g=gs.current;
+    const r=cvRef.current.getBoundingClientRect();
+    const sx=e.clientX-r.left,sy=e.clientY-r.top;
+    lastMousePos.x=sx;lastMousePos.y=sy;
     if(dragRef.current.active){
-      g.scrollX=dragRef.current.sx0-(e.clientX-dragRef.current.startX);
-      g.scrollY=dragRef.current.sy0-(e.clientY-dragRef.current.startY);
+      const dx=(e.clientX-dragRef.current.startX)/viewport.scale;
+      const dy=(e.clientY-dragRef.current.startY)/viewport.scale;
+      viewport.offsetX=clampOffset(dragRef.current.sx0-dx,'x');
+      viewport.offsetY=clampOffset(dragRef.current.sy0-dy,'y');
       fu(n=>n+1);return;
     }
-    const r=cvRef.current.getBoundingClientRect();
     const{ox,oy}=getOxOy();
-    const{col,row}=fromIsoH(e.clientX-r.left,e.clientY-r.top,ox,oy,g.heights);
+    const{wx,wy}=screenToWorld(sx,sy,viewport);
+    const{col,row}=fromIsoH(wx,wy,ox,oy,g.heights);
     setHover(col>=0&&col<COLS&&row>=0&&row<ROWS?{col,row}:null);},[getOxOy]);
 
   const onMouseDown=useCallback(e=>{
     if(!gs.current) return;
-    if(e.button===1||(e.button===0&&e.altKey)){
+    if(e.button===2||(e.button===1)||(e.button===0&&e.altKey)){
       e.preventDefault();
-      const g=gs.current;
-      dragRef.current={active:true,startX:e.clientX,startY:e.clientY,sx0:g.scrollX||0,sy0:g.scrollY||0};
+      dragRef.current={active:true,startX:e.clientX,startY:e.clientY,sx0:viewport.offsetX,sy0:viewport.offsetY};
     }
   },[]);
 
@@ -1361,8 +1459,22 @@ export default function Settlers2(){
     const g=gs.current;
     const r=cvRef.current.getBoundingClientRect();
     const{ox,oy}=getOxOy();
-    const mx=e.clientX-r.left,my=e.clientY-r.top;
-    const{col,row}=fromIsoH(mx,my,ox,oy,g.heights);
+    const sx=e.clientX-r.left,sy=e.clientY-r.top;
+    const mx=sx,my=sy; // screen-space (used below for popup positioning checks)
+    // Minimap click-to-navigate
+    const mmX=CANVAS_W-MINIMAP_W-MINIMAP_MARGIN;
+    const mmY=CANVAS_H-MINIMAP_H-MINIMAP_MARGIN;
+    const rx=sx-mmX,ry=sy-mmY;
+    if(rx>=0&&rx<=MINIMAP_W&&ry>=0&&ry<=MINIMAP_H){
+      const isoW=(COLS+ROWS)*TW/2,isoH=(COLS+ROWS)*TH/2;
+      const targetWX=(rx/MINIMAP_W)*isoW-CANVAS_W/2;
+      const targetWY=(ry/MINIMAP_H)*isoH-CANVAS_H/2;
+      viewport.offsetX=clampOffset(targetWX,'x');
+      viewport.offsetY=clampOffset(targetWY,'y');
+      fu(n=>n+1);return;
+    }
+    const{wx,wy}=screenToWorld(sx,sy,viewport);
+    const{col,row}=fromIsoH(wx,wy,ox,oy,g.heights);
     if(col<0||col>=COLS||row<0||row>=ROWS){setPopup(null);setFlagPopup(null);return;}
 
     // ── ROAD BUILDING MODE ──────────────────────────────────
@@ -1382,7 +1494,8 @@ export default function Settlers2(){
           const f = g.flags.find(f=>f.col===nb.col&&f.row===nb.row&&f.id!==roadMode.fromFlagId);
           if(f) {
             const fIso = nodeIso(f.col,f.row,ox,oy,g.heights);
-            if(my < fIso.y && Math.abs(mx - fIso.x) < TW/2) { targetFlag = f; break; }
+            const fSc=worldToScreen(fIso.x,fIso.y,viewport);
+            if(my < fSc.sy && Math.abs(mx - fSc.sx) < TW/2*viewport.scale) { targetFlag = f; break; }
           }
         }
       }
@@ -1451,14 +1564,16 @@ export default function Settlers2(){
         const f = g.flags.find(f=>f.col===nb.col&&f.row===nb.row);
         if(f) {
           const fIso = nodeIso(f.col,f.row,ox,oy,g.heights);
+          const fSc=worldToScreen(fIso.x,fIso.y,viewport);
           // Only snap if click is above the flag center (clicking on pennant)
-          if(my < fIso.y && Math.abs(mx - fIso.x) < TW/2) { clickedFlag = f; break; }
+          if(my < fSc.sy && Math.abs(mx - fSc.sx) < TW/2*viewport.scale) { clickedFlag = f; break; }
         }
       }
     }
     if(clickedFlag){
       const iso=nodeIso(clickedFlag.col,clickedFlag.row,ox,oy,g.heights);
-      setFlagPopup({flagId:clickedFlag.id, screenX:iso.x, screenY:iso.y,
+      const{sx:isoSx,sy:isoSy}=worldToScreen(iso.x,iso.y,viewport);
+      setFlagPopup({flagId:clickedFlag.id, screenX:isoSx, screenY:isoSy,
         col:clickedFlag.col, row:clickedFlag.row, hasBldg: clickedFlag.buildingIdx!==undefined&&clickedFlag.buildingIdx!==null});
       return;
     }
@@ -1485,7 +1600,8 @@ export default function Settlers2(){
       if(existingFlag) {
         // Click existing flag — open flag popup
         const iso=nodeIso(col,row,ox,oy,g.heights);
-        setFlagPopup({flagId:existingFlag.id, screenX:iso.x, screenY:iso.y, col, row});
+        const{sx:isoSx,sy:isoSy}=worldToScreen(iso.x,iso.y,viewport);
+        setFlagPopup({flagId:existingFlag.id, screenX:isoSx, screenY:isoSy, col, row});
       } else {
         g.flags.push({id:g.nextFlagId++, col, row, goods:[]});
         setMsg("Flag placed! Connect it with a road.");fu(n=>n+1);
@@ -1495,7 +1611,8 @@ export default function Settlers2(){
 
     // Open building popup
     const iso=nodeIso(col,row,ox,oy,g.heights);
-    setPopup({col,row,bq,screenX:iso.x,screenY:iso.y});
+    const{sx:isoSx,sy:isoSy}=worldToScreen(iso.x,iso.y,viewport);
+    setPopup({col,row,bq,screenX:isoSx,screenY:isoSy});
     setPopHover(null);
     setMsg("");
   },[popup,flagPopup,roadMode,getOxOy]);
@@ -1557,6 +1674,29 @@ export default function Settlers2(){
     setMsg("Road building mode: click a destination flag to auto-route. ESC to cancel.");
   },[]);
 
+  // ── Zoom helper ──────────────────────────────────────────────────
+  const zoomCentred=(delta)=>{
+    const newScale=Math.max(ZOOM_MIN,Math.min(ZOOM_MAX,viewport.scale+delta));
+    const cx=CANVAS_W/2,cy=CANVAS_H/2;
+    const wx=cx/viewport.scale+viewport.offsetX;
+    const wy=cy/viewport.scale+viewport.offsetY;
+    viewport.scale=newScale;
+    viewport.offsetX=clampOffset(wx-cx/newScale,'x');
+    viewport.offsetY=clampOffset(wy-cy/newScale,'y');
+  };
+
+  // ── Centre viewport on HQ ────────────────────────────────────────
+  const centreViewportOnHQ=()=>{
+    const g=gs.current;if(!g) return;
+    const hx=g.buildings[0]?g.buildings[0].col:Math.floor(COLS/2);
+    const hy=g.buildings[0]?g.buildings[0].row:Math.floor(ROWS/2);
+    const ox=CANVAS_W/2-(COLS-ROWS)*(TW/4);
+    const worldPos=nodeIso(hx,hy,ox,30,g.heights);
+    viewport.scale=1.0;
+    viewport.offsetX=clampOffset(worldPos.x-CANVAS_W/2,'x');
+    viewport.offsetY=clampOffset(worldPos.y-CANVAS_H/2,'y');
+  };
+
   // ── Load WLD map ────────────────────────────────────────────────
   const loadMap=useCallback((parsedMap)=>{
     const g=gs.current;if(!g) return;
@@ -1597,12 +1737,7 @@ export default function Settlers2(){
     g.flags=[hqFlag];g.roads=[];g.nextFlagId=1;
     g.figures=[];g.nextFigId=0;
     // Centre viewport on HQ
-    const CW_=cvRef.current?cvRef.current.width:CANVAS_W;
-    const CH_=cvRef.current?cvRef.current.height:CANVAS_H;
-    const hqH=(newHeights[hy]&&newHeights[hy][hx])||0;
-    // scrollX = isoX_of_HQ - CW/2; isoX = (hx-hy)*(TW/2) + CW/2 - (COLS-ROWS)*(TW/4) - scrollX
-    g.scrollX=(hx-hy)*(TW/2)-(COLS-ROWS)*(TW/4);
-    g.scrollY=(hx+hy)*(TH/2)+30-CH_/2-hqH*HEIGHT_FACTOR;
+    centreViewportOnHQ();
     setMsg(`Loaded: ${title||'WLD Map'} (${width}\u00d7${height})`);
     fu(n=>n+1);
   },[]);
@@ -1615,10 +1750,14 @@ export default function Settlers2(){
         else{setPopup(null);setFlagPopup(null);}
       }
       const g=gs.current;if(!g) return;
-      if(e.key==="ArrowLeft"){g.scrollX-=SCROLL_STEP;fu(n=>n+1);}
-      else if(e.key==="ArrowRight"){g.scrollX+=SCROLL_STEP;fu(n=>n+1);}
-      else if(e.key==="ArrowUp"){g.scrollY-=SCROLL_STEP;fu(n=>n+1);}
-      else if(e.key==="ArrowDown"){g.scrollY+=SCROLL_STEP;fu(n=>n+1);}
+      const KSTEP=SCROLL_STEP/viewport.scale;
+      if(e.key==="ArrowLeft"){viewport.offsetX=clampOffset(viewport.offsetX-KSTEP,'x');fu(n=>n+1);}
+      else if(e.key==="ArrowRight"){viewport.offsetX=clampOffset(viewport.offsetX+KSTEP,'x');fu(n=>n+1);}
+      else if(e.key==="ArrowUp"){viewport.offsetY=clampOffset(viewport.offsetY-KSTEP,'y');fu(n=>n+1);}
+      else if(e.key==="ArrowDown"){viewport.offsetY=clampOffset(viewport.offsetY+KSTEP,'y');fu(n=>n+1);}
+      else if(e.key==="+"||e.key==="="){zoomCentred(+ZOOM_STEP);fu(n=>n+1);}
+      else if(e.key==="-"){zoomCentred(-ZOOM_STEP);fu(n=>n+1);}
+      else if(e.key==="Home"){centreViewportOnHQ();fu(n=>n+1);}
     };
     window.addEventListener("keydown",handler);
     return()=>window.removeEventListener("keydown",handler);
@@ -1627,11 +1766,32 @@ export default function Settlers2(){
   // Right-click to undo last road segment
   const onContextMenu=useCallback(e=>{
     e.preventDefault();
+    if(dragRef.current.wasDragging){dragRef.current.wasDragging=false;return;}
     if(roadMode && roadMode.path.length > 0) {
       setRoadMode({...roadMode, path: roadMode.path.slice(0, -1)});
       setMsg("Undid last road segment. Continue building or ESC to cancel.");
     }
   },[roadMode]);
+
+  // ── Wheel zoom ──────────────────────────────────────────────────
+  useEffect(()=>{
+    const cv=cvRef.current;if(!cv) return;
+    const handler=e=>{
+      e.preventDefault();
+      const dir=e.deltaY<0?1:-1;
+      const newScale=Math.max(ZOOM_MIN,Math.min(ZOOM_MAX,viewport.scale+dir*ZOOM_STEP));
+      const r=cv.getBoundingClientRect();
+      const ox=e.clientX-r.left,oy=e.clientY-r.top;
+      const mouseWX=ox/viewport.scale+viewport.offsetX;
+      const mouseWY=oy/viewport.scale+viewport.offsetY;
+      viewport.scale=newScale;
+      viewport.offsetX=clampOffset(mouseWX-ox/newScale,'x');
+      viewport.offsetY=clampOffset(mouseWY-oy/newScale,'y');
+      fu(n=>n+1);
+    };
+    cv.addEventListener('wheel',handler,{passive:false});
+    return()=>cv.removeEventListener('wheel',handler);
+  },[loaded]);
 
   if(!loaded) return(<div style={{display:"flex",alignItems:"center",justifyContent:"center",
     height:"100vh",background:"#1a2810",color:"#c8b890",fontFamily:"Georgia,serif"}}>

@@ -103,11 +103,17 @@ function parseWLDMap(arrayBuffer){
   }
   offset=2352;
   const width=dv.getUint16(offset,true);offset+=2;
-  const height=dv.getUint16(offset,true);offset+=4;
+  const height=dv.getUint16(offset,true);offset+=2;
+  if(width===0||height===0||width>512||height>512||width%16!==0||height%16!==0){
+    throw new Error(`Invalid map dimensions: ${width}×${height}. Expected multiples of 16 up to 512.`);
+  }
   const nodeCount=width*height;
   const blocks=[];
   for(let b=0;b<14;b++){
     const blockLen=dv.getUint32(offset+4,true);
+    if(blockLen>width*height*2){// max 2 bytes per node
+      throw new Error(`Block ${b} has invalid length ${blockLen} (map is ${width}×${height} = ${width*height} nodes). File may be corrupt or offset is wrong.`);
+    }
     offset+=16;
     blocks.push(new Uint8Array(arrayBuffer,offset,blockLen));
     offset+=blockLen;

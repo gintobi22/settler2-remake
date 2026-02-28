@@ -1032,11 +1032,7 @@ export default function Settlers2(){
       const t=g.map[row][col];
       const inT=g.territory.has(`${col},${row}`);
 
-      // Diamond path for overlays
-      const diamond=()=>{ctx.beginPath();ctx.moveTo(x,y-TH/2);ctx.lineTo(x+TW/2,y);ctx.lineTo(x,y+TH/2);ctx.lineTo(x-TW/2,y);ctx.closePath();};
-
-      if(roadTiles.has(`${col},${row}`)){diamond();ctx.fillStyle="rgba(160,120,60,0.35)";ctx.fill();}
-      if(roadMode && roadMode.path.find(p=>p.col===col&&p.row===row)){diamond();ctx.fillStyle="rgba(255,200,80,0.3)";ctx.fill();}
+      // Territory border edge overlays
       if(inT){const edges=[[0,-1,0,1],[1,0,1,2],[0,1,2,3],[-1,0,3,0]];
         const pts=[[x,y-TH/2],[x+TW/2,y],[x,y+TH/2],[x-TW/2,y]];
         let isBorder=false;

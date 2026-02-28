@@ -54,6 +54,7 @@ const LS={
 };
 
 const TW=64,TH=36,TICK_MS=200,PROD_TICKS=4,HQ_RAD=4,MIL_RAD=3;
+const CANVAS_W=960,CANVAS_H=580,SCROLL_STEP=100;
 let COLS=16,ROWS=14;
 const HEIGHT_FACTOR=5;
 const T={GRASS:0,FOREST:1,MOUNTAIN:2,WATER:3,SAND:4,MEADOW:5};
@@ -554,6 +555,7 @@ export default function Settlers2(){
   const cvRef=useRef(null),imgRef=useRef({bldg:null,comb:null,fig:{}});
   const[loaded,setLoaded]=useState(false),[tick,setTick]=useState(0);
   const gs=useRef(null),[,fu]=useState(0);
+  const dragRef=useRef({active:false,startX:0,startY:0,sx0:0,sy0:0});
   const[hover,setHover]=useState(null);
   const[msg,setMsg]=useState("Welcome to The Settlers II! Click a tile to build. Click a flag to build roads.");
 
@@ -580,6 +582,7 @@ export default function Settlers2(){
       territory:ter, goods, tick:0,
       flags:[hqFlag], roads:[], nextFlagId:1,
       figures:[], nextFigId:0,
+      scrollX:0, scrollY:0,
     };
     setLoaded(true);}};
     const i1=new Image();i1.onload=()=>{imgRef.current.bldg=i1;done();};i1.src=BLDG_SRC;
@@ -949,7 +952,8 @@ export default function Settlers2(){
   // ── Canvas rendering ───────────────────────────────────────────────
   useEffect(()=>{if(!loaded) return;
     const cv=cvRef.current,ctx=cv.getContext("2d"),g=gs.current;if(!g) return;
-    const W=cv.width,H=cv.height,ox=W/2-(COLS-ROWS)*(TW/4),oy=30;
+    const W=cv.width,H=cv.height;
+    const ox=W/2-(COLS-ROWS)*(TW/4)-(g.scrollX||0),oy=30-(g.scrollY||0);
     const{bldg,comb}=imgRef.current;
     ctx.fillStyle="#1a2810";ctx.fillRect(0,0,W,H);
 
@@ -1324,16 +1328,40 @@ export default function Settlers2(){
 
   const getOxOy=useCallback(()=>{
     if(!cvRef.current) return{ox:0,oy:0};
-    return{ox:cvRef.current.width/2-(COLS-ROWS)*(TW/4),oy:30};
+    const g=gs.current;
+    const sx=(g&&g.scrollX)||0,sy=(g&&g.scrollY)||0;
+    return{ox:cvRef.current.width/2-(COLS-ROWS)*(TW/4)-sx,oy:30-sy};
   },[]);
 
   const onMove=useCallback(e=>{if(!cvRef.current||!gs.current) return;
+    const g=gs.current;
+    if(dragRef.current.active){
+      g.scrollX=dragRef.current.sx0-(e.clientX-dragRef.current.startX);
+      g.scrollY=dragRef.current.sy0-(e.clientY-dragRef.current.startY);
+      fu(n=>n+1);return;
+    }
     const r=cvRef.current.getBoundingClientRect();
     const{ox,oy}=getOxOy();
-    const{col,row}=fromIsoH(e.clientX-r.left,e.clientY-r.top,ox,oy,gs.current.heights);
+    const{col,row}=fromIsoH(e.clientX-r.left,e.clientY-r.top,ox,oy,g.heights);
     setHover(col>=0&&col<COLS&&row>=0&&row<ROWS?{col,row}:null);},[getOxOy]);
 
+  const onMouseDown=useCallback(e=>{
+    if(!gs.current) return;
+    if(e.button===1||(e.button===0&&e.altKey)){
+      e.preventDefault();
+      const g=gs.current;
+      dragRef.current={active:true,startX:e.clientX,startY:e.clientY,sx0:g.scrollX||0,sy0:g.scrollY||0};
+    }
+  },[]);
+
+  const onMouseUp=useCallback(()=>{
+    if(dragRef.current.active) dragRef.current.wasDragging=true;
+    dragRef.current.active=false;
+  },[]);
+  const onMouseLeave=useCallback(()=>{dragRef.current.active=false;},[]);
+
   const onClick=useCallback(e=>{if(!gs.current) return;
+    if(dragRef.current.wasDragging){dragRef.current.wasDragging=false;return;}
     const g=gs.current;
     const r=cvRef.current.getBoundingClientRect();
     const{ox,oy}=getOxOy();
@@ -1565,6 +1593,15 @@ export default function Settlers2(){
     g.territory=ter;g.goods=goods;g.tick=0;
     g.flags=[hqFlag];g.roads=[];g.nextFlagId=1;
     g.figures=[];g.nextFigId=0;
+    // Centre viewport on HQ
+    const CW_=cvRef.current?cvRef.current.width:CANVAS_W;
+    const CH_=cvRef.current?cvRef.current.height:CANVAS_H;
+    const baseOx=CW_/2-(width-height)*(TW/4);
+    const baseOy=30;
+    const hqPx=(hx-hy)*(TW/2)+baseOx;
+    const hqPy=(hx+hy)*(TH/2)+baseOy;
+    g.scrollX=hqPx-CW_/2;
+    g.scrollY=hqPy-CH_/2;
     setMsg(`Loaded: ${title||'WLD Map'} (${width}\u00d7${height})`);
     fu(n=>n+1);
   },[]);
@@ -1576,6 +1613,11 @@ export default function Settlers2(){
         if(roadMode){setRoadMode(null);setMsg("Road building cancelled.");}
         else{setPopup(null);setFlagPopup(null);}
       }
+      const g=gs.current;if(!g) return;
+      if(e.key==="ArrowLeft"){g.scrollX-=SCROLL_STEP;fu(n=>n+1);}
+      else if(e.key==="ArrowRight"){g.scrollX+=SCROLL_STEP;fu(n=>n+1);}
+      else if(e.key==="ArrowUp"){g.scrollY-=SCROLL_STEP;fu(n=>n+1);}
+      else if(e.key==="ArrowDown"){g.scrollY+=SCROLL_STEP;fu(n=>n+1);}
     };
     window.addEventListener("keydown",handler);
     return()=>window.removeEventListener("keydown",handler);
@@ -1595,7 +1637,7 @@ export default function Settlers2(){
     <div style={{textAlign:"center"}}><div style={{fontSize:24,marginBottom:12}}>The Settlers II</div>
     <div style={{fontSize:14,opacity:0.7}}>Loading game assets...</div></div></div>);
 
-  const g=gs.current,CW=960,CH=580;
+  const g=gs.current,CW=CANVAS_W,CH=CANVAS_H;
   const resList=["boards","stones","wood","grain","flour","water","bread","coal","iron_ore","gold_ore","iron","gold_bar","beer","swords","shields","fish","meat"];
 
   let hoverLabel="";
@@ -1662,6 +1704,7 @@ export default function Settlers2(){
           <div style={{position:"relative"}}>
             <canvas ref={cvRef} width={CW} height={CH} onMouseMove={onMove} onClick={onClick}
               onContextMenu={onContextMenu}
+              onMouseDown={onMouseDown} onMouseUp={onMouseUp} onMouseLeave={onMouseLeave}
               style={{cursor:roadMode?"crosshair":"default",imageRendering:"pixelated",
                 border:"1px solid #2a3a18",borderRadius:2}} />
             {/* ── BUILDING POPUP ──────────────────────── */}

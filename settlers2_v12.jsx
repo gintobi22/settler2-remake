@@ -996,6 +996,7 @@ export default function Settlers2(){
     // Height-adjusted iso position
     const iH=(c,r)=>nodeIso(c,r,ox,oy,g.heights);
 
+    ctx.imageSmoothingEnabled=false;
     // ── Pass 1: Terrain triangles ──
     // For each node (col,row), draw two triangles:
     //   t1 (RSU): node(col,row) → node(col,row+1) → node(col+1,row) - bottom triangle
@@ -1012,8 +1013,6 @@ export default function Settlers2(){
         ctx.beginPath();
         ctx.moveTo(n0.x,n0.y);ctx.lineTo(n1.x,n1.y);ctx.lineTo(n2.x,n2.y);ctx.closePath();
         ctx.fillStyle=pat||fallback;ctx.fill();
-        // Subtle shading variation
-        if((col+row)%3===0){ctx.fillStyle="rgba(0,0,0,0.05)";ctx.fill();}
       }
 
       // Triangle t2: this → below-right → right
@@ -1022,9 +1021,9 @@ export default function Settlers2(){
         ctx.beginPath();
         ctx.moveTo(n0.x,n0.y);ctx.lineTo(n1.x,n1.y);ctx.lineTo(n2.x,n2.y);ctx.closePath();
         ctx.fillStyle=pat||fallback;ctx.fill();
-        if((col+row)%5===0){ctx.fillStyle="rgba(255,255,200,0.04)";ctx.fill();}
       }
     }
+    ctx.imageSmoothingEnabled=true;
 
     // ── Pass 2: Overlays (territory, roads, water) using diamond shapes ──
     for(let row=0;row<ROWS;row++) for(let col=0;col<COLS;col++){
@@ -1046,9 +1045,6 @@ export default function Settlers2(){
           if(!g.territory.has(`${col+dx},${row+dy}`)){isBorder=true;
             ctx.beginPath();ctx.moveTo(pts[p1][0],pts[p1][1]);ctx.lineTo(pts[p2][0],pts[p2][1]);ctx.stroke();}}
         if(isBorder){drawList.push({depth:col+row-0.3,type:"border",x,y});}}
-      if(t===T.WATER){const ph=((col*3+row*5+g.tick*2)%20)/20;
-        ctx.fillStyle=`rgba(140,200,255,${0.06+0.04*Math.sin(ph*Math.PI*2)})`;
-        diamond();ctx.fill();}
       if(t===T.FOREST){
         const wldObj=g.objects&&g.objects[row]&&g.objects[row][col];
         const tt=normaliseSpecies((wldObj&&wldObj.kind==='tree'&&wldObj.species)?wldObj.species:treeFor(col,row));

@@ -217,11 +217,12 @@ const BQ_BUILDINGS={
   mine:["coal_mine","iron_mine","gold_mine","granite_mine"],
 };
 
-const TREES=["pine","birch","oak","cypress","cherry","fir"];
+const TREES=["pine","birch","oak","cypress","cherry","fir","palm"];
 const TF={pine:["pine","pine_f1","pine_f2","pine_f3"],birch:["birch","birch_f1","birch_f2","birch_f3"],
   oak:["oak","oak_f1","oak_f2","oak_f3"],cypress:["cypress"],fir:["fir"],cherry:["cherry"],palm:["palm"]};
 function treeFor(c,r){return TREES[((c*7+r*13+c*r)&0x7FFFFFFF)%TREES.length];}
 function treeFrame(type,tick){const f=TF[type]||[type];return f[tick%f.length];}
+function normaliseSpecies(s){if(s==='pine2') return 'pine';return s;}
 
 function getBuildQuality(col,row,map,buildings,territory,flags,bqMap){
   if(!territory.has(`${col},${row}`)) return null;
@@ -583,6 +584,7 @@ export default function Settlers2(){
       flags:[hqFlag], roads:[], nextFlagId:1,
       figures:[], nextFigId:0,
       scrollX:0, scrollY:0,
+      objects:null,
     };
     setLoaded(true);}};
     const i1=new Image();i1.onload=()=>{imgRef.current.bldg=i1;done();};i1.src=BLDG_SRC;
@@ -1048,7 +1050,9 @@ export default function Settlers2(){
         ctx.fillStyle=`rgba(140,200,255,${0.06+0.04*Math.sin(ph*Math.PI*2)})`;
         diamond();ctx.fill();}
       if(t===T.FOREST){
-        const tt=treeFor(col,row),fr=treeFrame(tt,Math.floor(g.tick/3)+((col+row)%4));
+        const wldObj=g.objects&&g.objects[row]&&g.objects[row][col];
+        const tt=normaliseSpecies((wldObj&&wldObj.kind==='tree'&&wldObj.species)?wldObj.species:treeFor(col,row));
+        const fr=treeFrame(tt,Math.floor(g.tick/3)+((col+row)%4));
         drawList.push({depth:col+row,type:"tree",x,y,sprite:fr});
       }
     }
@@ -1579,6 +1583,11 @@ export default function Settlers2(){
       else newMap[row][col]=T.GRASS;
       newBQ[row][col]=node.buildQuality;
     }
+    const newObjects=Array.from({length:height},()=>Array.from({length:width},()=>null));
+    for(let row=0;row<height;row++) for(let col=0;col<width;col++){
+      const node=nodes[row*width+col];
+      if(node.object) newObjects[row][col]=node.object;
+    }
     const rawHq=parsedMap.hqPositions[0];
     const hqPos=(rawHq&&rawHq.x>=0&&rawHq.x<width&&rawHq.y>=0&&rawHq.y<height)?rawHq:{x:Math.floor(width/2),y:Math.floor(height/2)};
     const hx=hqPos.x,hy=hqPos.y;
@@ -1590,7 +1599,7 @@ export default function Settlers2(){
     const goods={};GOODS.forEach(k=>goods[k]=0);
     goods.boards=6;goods.stones=6;goods.wood=4;goods.bread=2;goods.water=2;
     const hqFlag={id:0,col:Math.min(hx+1,width-1),row:hy,buildingIdx:0,goods:[]};
-    g.map=newMap;g.heights=newHeights;g.wldBQ=newBQ;
+    g.map=newMap;g.heights=newHeights;g.wldBQ=newBQ;g.objects=newObjects;
     g.buildings=[{type:"hq",col:hx,row:hy,timer:0,flagId:0}];
     g.territory=ter;g.goods=goods;g.tick=0;
     g.flags=[hqFlag];g.roads=[];g.nextFlagId=1;

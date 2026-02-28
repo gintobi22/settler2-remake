@@ -100,7 +100,7 @@ function parseWLDMap(arrayBuffer){
   for(let i=0;i<7;i++){
     const x=dv.getUint16(offset,true),y=dv.getUint16(offset+2,true);
     offset+=4;
-    if(x!==0xFFFF&&y!==0xFFFF&&!(x===0&&y===0)) hqPositions.push({x,y});
+    if(!(x===0xFFFF&&y===0xFFFF)) hqPositions.push({x,y});
   }
   // Header ends with: uint16 0x2711 sig, uint32 unknown=0, uint16 width, uint16 height
   // Normal maps: sig at byte 2342 → width at 2348; some buggy maps have an extra uint16=0 before sig (hasExtraWord)
@@ -1579,8 +1579,10 @@ export default function Settlers2(){
       else newMap[row][col]=T.GRASS;
       newBQ[row][col]=node.buildQuality;
     }
-    const hqPos=parsedMap.hqPositions[0]||{x:Math.floor(width/2),y:Math.floor(height/2)};
+    const rawHq=parsedMap.hqPositions[0];
+    const hqPos=(rawHq&&rawHq.x>=0&&rawHq.x<width&&rawHq.y>=0&&rawHq.y<height)?rawHq:{x:Math.floor(width/2),y:Math.floor(height/2)};
     const hx=hqPos.x,hy=hqPos.y;
+    console.log(`[WLD] HQ at (${hqPos.x},${hqPos.y}), map ${width}\u00d7${height}, hqPositions:`,parsedMap.hqPositions);
     const ter=new Set();
     for(let dy=-HQ_RAD;dy<=HQ_RAD;dy++) for(let dx=-HQ_RAD;dx<=HQ_RAD;dx++){
       if(Math.abs(dx)+Math.abs(dy)<=HQ_RAD+1){const nx=hx+dx,ny=hy+dy;
@@ -1596,12 +1598,10 @@ export default function Settlers2(){
     // Centre viewport on HQ
     const CW_=cvRef.current?cvRef.current.width:CANVAS_W;
     const CH_=cvRef.current?cvRef.current.height:CANVAS_H;
-    const baseOx=CW_/2-(width-height)*(TW/4);
-    const baseOy=30;
-    const hqPx=(hx-hy)*(TW/2)+baseOx;
-    const hqPy=(hx+hy)*(TH/2)+baseOy;
-    g.scrollX=hqPx-CW_/2;
-    g.scrollY=hqPy-CH_/2;
+    const hqH=(newHeights[hy]&&newHeights[hy][hx])||0;
+    // scrollX = isoX_of_HQ - CW/2; isoX = (hx-hy)*(TW/2) + CW/2 - (COLS-ROWS)*(TW/4) - scrollX
+    g.scrollX=(hx-hy)*(TW/2)-(COLS-ROWS)*(TW/4);
+    g.scrollY=(hx+hy)*(TH/2)+30-CH_/2-hqH*HEIGHT_FACTOR;
     setMsg(`Loaded: ${title||'WLD Map'} (${width}\u00d7${height})`);
     fu(n=>n+1);
   },[]);

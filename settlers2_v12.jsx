@@ -1170,7 +1170,7 @@ export default function Settlers2(){
           // P1=upper(r-1,c), P2=right(r,c+1), P3=lower-left(r+1,c-1), P4=lower(r+1,c)
           const P1=(g.heights[r-1]&&g.heights[r-1][c])||0;
           const P2=(g.heights[r]&&g.heights[r][c+1])||0;
-          const P3=(g.heights[r+1]&&g.heights[r+1]&&g.heights[r+1][c-1])||0;
+          const P3=(g.heights[r+1]&&g.heights[r+1][c-1])||0;
           const P4=(g.heights[r+1]&&g.heights[r+1][c])||0;
           const shade=64+9*(P1-H)-3*(P2-H)-6*(P3-H)-9*(P4-H);
           return Math.max(0,Math.min(128,shade))/128;
@@ -1203,6 +1203,7 @@ export default function Settlers2(){
       gl.viewport(0,0,wglCv.width,wglCv.height);
       gl.clear(gl.COLOR_BUFFER_BIT);
       gl.useProgram(prog);
+      // u_resolution = half canvas dimensions: vertex at (0,0)→clip(-1,-1), at (W,H)→clip(1,-1) after y-flip
       gl.uniform2f(uResLoc,wglCv.width/2,wglCv.height/2);
       gl.uniform2f(uScrollLoc,viewport.offsetX,viewport.offsetY);
       gl.uniform1f(uZoomLoc,viewport.scale);
@@ -2032,7 +2033,7 @@ export default function Settlers2(){
         {/* Canvas */}
         <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",
           background:"linear-gradient(#1a2810,#162008)",position:"relative"}}>
-          <div style={{position:"relative"}}>
+          <div style={{position:"relative",width:CW,height:CH}}>
             {/* WebGL terrain canvas (z-index 0, behind 2D canvas) */}
             <canvas ref={webglRef} width={CW} height={CH}
               style={{position:"absolute",top:0,left:0,zIndex:0,imageRendering:"pixelated",
@@ -2042,7 +2043,7 @@ export default function Settlers2(){
               onContextMenu={onContextMenu}
               onMouseDown={onMouseDown} onMouseUp={onMouseUp} onMouseLeave={onMouseLeave}
               style={{cursor:roadMode?"crosshair":"default",imageRendering:"pixelated",
-                position:"relative",zIndex:1,
+                position:"absolute",zIndex:1,
                 border:"1px solid #2a3a18",borderRadius:2}} />
             {/* ── BUILDING POPUP ──────────────────────── */}
             {popup&&<div style={{...popStyle,zIndex:10}} onClick={e=>e.stopPropagation()}>

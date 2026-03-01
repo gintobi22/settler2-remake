@@ -213,6 +213,65 @@ const FIG_SPRITES={
 };
 const FIG_CW=32,FIG_CH=16,FIG_FOOT=13,FIG_STEPS=8;
 const DIR_MAP={'1,0':1,'-1,0':4,'0,1':2,'0,-1':5,'1,-1':0,'-1,1':3,'0,0':1};
+
+// ── WebGL Terrain Renderer (Step 5a) ──────────────────────────────
+// AUDIT FINDINGS (recorded before any code changes):
+// AUDIT-01: cvRef (existing 2D canvas), width=CANVAS_W=960, height=CANVAS_H=580;
+//           getContext('2d') in render useEffect; render loop = useEffect on [loaded,tick,...];
+//           draw order: background fill → terrain triangles → overlays/roads → buildings → figures → ui
+// AUDIT-02: terrain uses beginPath/fill with ctx.createPattern (TERR_HEX 16×16 tiles) or solid colour;
+//           loop: for row/col → t1(col,row)→(col,row+1)→(col+1,row) + t2(col,row)→(col+1,row)→(col+1,row-1)
+// AUDIT-03: heights = g.heights[row][col]; terrain = g.map[row][col] (T.GRASS..T.MEADOW 0-5);
+//           COLS/ROWS globals; no WLD block 13 shading stored on nodes → compute from heightmap
+// AUDIT-04: nodeIso(c,r,ox,oy,heights) → x=(c-r)*32+ox, y=(c+r)*18+oy-h*5; TW=64,TH=36,HEIGHT_FACTOR=5
+// AUDIT-05: viewport={offsetX,offsetY,scale} present (line ~71); used via ctx.scale/ctx.translate
+// AUDIT-06: deleted = terrain fill + terrain triangle loops; modified = render orchestration + canvas setup;
+//           untouched = all sprite/building/figure/game logic
+
+// Vertex shader (exact — do not modify):
+const WGL_VERT_SRC=`
+attribute vec2 a_position;
+attribute vec2 a_texcoord;
+attribute float a_shade;
+uniform vec2 u_resolution;
+uniform vec2 u_scroll;
+uniform float u_zoom;
+varying vec2 v_texcoord;
+varying float v_shade;
+void main(){
+  vec2 pos=(a_position-u_scroll)*u_zoom;
+  vec2 clipSpace=(pos/u_resolution)*2.0-1.0;
+  clipSpace.y*=-1.0;
+  gl_Position=vec4(clipSpace,0.0,1.0);
+  v_texcoord=a_texcoord;
+  v_shade=a_shade;
+}`;
+
+// Fragment shader (exact — do not modify):
+const WGL_FRAG_SRC=`
+precision mediump float;
+uniform sampler2D u_terrainTexture;
+varying vec2 v_texcoord;
+varying float v_shade;
+void main(){
+  vec4 texColor=texture2D(u_terrainTexture,v_texcoord);
+  float brightness=clamp(v_shade*2.0,0.0,1.5);
+  gl_FragColor=vec4(texColor.rgb*brightness,texColor.a);
+}`;
+
+// Placeholder terrain atlas: 6×1 texture, one representative colour per terrain type.
+// NOTE: TEX5.LBM is not yet loaded in this codebase.
+// Colours are sampled from TERR_HEX (first pixel) and TC fallbacks.
+// T.GRASS=0, T.FOREST=1, T.MOUNTAIN=2, T.WATER=3, T.SAND=4, T.MEADOW=5
+const WGL_ATLAS_PIXELS=new Uint8Array([
+  0x4b,0x7b,0x0f,0xff, // 0 GRASS   — first pixel of TERR_HEX[0]
+  0x73,0x9f,0x1f,0xff, // 1 FOREST  — first pixel of TERR_HEX[1]
+  0x9f,0x83,0x5b,0xff, // 2 MOUNTAIN— first pixel of TERR_HEX[2]
+  0x29,0x71,0xa6,0xff, // 3 WATER   — S2 ocean blue rgb(41,113,166)
+  0xc3,0x9f,0x7f,0xff, // 4 SAND    — first pixel of TERR_HEX[4]
+  0x6a,0x9a,0x38,0xff, // 5 MEADOW  — TC[T.MEADOW][0]
+]);
+const WGL_ATLAS_W=6,WGL_ATLAS_H=1;
 function figDir(fromC,fromR,toC,toR){
   const dc=Math.sign(toC-fromC),dr=Math.sign(toR-fromR);
   return DIR_MAP[dc+','+dr]??1;
@@ -654,6 +713,12 @@ export default function Settlers2(){
   // Road building mode
   const[roadMode,setRoadMode]=useState(null); // {fromFlagId, path:[{col,row}]}
 
+  // ── WebGL terrain renderer refs ───────────────────────────────────
+  const webglRef=useRef(null);   // WebGL <canvas> element (behind 2D canvas)
+  // glState: {gl, prog, buf, tex, aPosLoc, aTexLoc, aShLoc, uResLoc, uScrollLoc, uZoomLoc, uTexLoc, vertexCount}
+  const glStateRef=useRef(null);
+  const vboDirtyRef=useRef(true); // true = vertex buffer needs rebuilding
+
   useEffect(()=>{let cnt=0;const FIG_KEYS=Object.keys(FIG_SPRITES);const TOTAL=2+FIG_KEYS.length;const done=()=>{cnt++;if(cnt===TOTAL){
     const map=generateMap(),heights=generateHeights(map),hx=Math.floor(COLS/2),hy=Math.floor(ROWS/2);
     const ter=new Set();
@@ -677,6 +742,52 @@ export default function Settlers2(){
     FIG_KEYS.forEach(k=>{const img=new Image();img.onload=()=>{imgRef.current.fig[k]=img;done();};img.src=FIG_SPRITES[k];});
 
   },[]);
+
+  // ── WebGL initialisation (runs once after assets loaded) ─────────────
+  useEffect(()=>{
+    if(!loaded||!webglRef.current) return;
+    const canvas=webglRef.current;
+    const gl=canvas.getContext('webgl',{alpha:true,antialias:false,premultipliedAlpha:false});
+    if(!gl){console.warn('[WebGL] Context unavailable — terrain will render via Canvas 2D fallback.');return;}
+    const compShader=(type,src)=>{
+      const s=gl.createShader(type);gl.shaderSource(s,src);gl.compileShader(s);
+      if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){
+        console.error('[WebGL] Shader error:',gl.getShaderInfoLog(s));gl.deleteShader(s);return null;}
+      return s;};
+    const vs=compShader(gl.VERTEX_SHADER,WGL_VERT_SRC);
+    const fs=compShader(gl.FRAGMENT_SHADER,WGL_FRAG_SRC);
+    if(!vs||!fs) return;
+    const prog=gl.createProgram();
+    gl.attachShader(prog,vs);gl.attachShader(prog,fs);gl.linkProgram(prog);
+    if(!gl.getProgramParameter(prog,gl.LINK_STATUS)){
+      console.error('[WebGL] Link error:',gl.getProgramInfoLog(prog));return;}
+    const buf=gl.createBuffer();
+    // Build placeholder terrain colour atlas (6×1, one pixel per terrain type)
+    const tex=gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D,tex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT,1);
+    gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,WGL_ATLAS_W,WGL_ATLAS_H,0,gl.RGBA,gl.UNSIGNED_BYTE,WGL_ATLAS_PIXELS);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+    gl.clearColor(0.16,0.44,0.65,1.0); // S2 ocean blue
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);
+    glStateRef.current={
+      gl,prog,buf,tex,
+      aPosLoc:gl.getAttribLocation(prog,'a_position'),
+      aTexLoc:gl.getAttribLocation(prog,'a_texcoord'),
+      aShLoc :gl.getAttribLocation(prog,'a_shade'),
+      uResLoc:gl.getUniformLocation(prog,'u_resolution'),
+      uScrollLoc:gl.getUniformLocation(prog,'u_scroll'),
+      uZoomLoc:gl.getUniformLocation(prog,'u_zoom'),
+      uTexLoc:gl.getUniformLocation(prog,'u_terrainTexture'),
+      vertexCount:0,
+    };
+    vboDirtyRef.current=true;
+    console.log('[WebGL] Initialized successfully');
+  },[loaded]);
 
   // ── Game tick: production + figures ─────────────────────────────────
   useEffect(()=>{if(!loaded) return;
@@ -1042,7 +1153,73 @@ export default function Settlers2(){
     const W=cv.width,H=cv.height;
     const ox=W/2-(COLS-ROWS)*(TW/4),oy=30;
     const{bldg,comb}=imgRef.current;
-    ctx.fillStyle="#1a2810";ctx.fillRect(0,0,W,H);
+
+    // ── WebGL terrain: build VBO if dirty, then render ────────────────
+    const glSt=glStateRef.current;
+    if(glSt){
+      // Rebuild vertex buffer when map changes
+      if(vboDirtyRef.current){
+        const{gl,buf}=glSt;
+        const cols=COLS,rows=ROWS;
+        const floats=new Float32Array(cols*rows*30);
+        let idx=0;
+        // Compute Gouraud shade for a node (Step 8: real lighting from heightmap)
+        // Formula: shade = 64 + 9*(P1-H) - 3*(P2-H) - 6*(P3-H) - 9*(P4-H), clamped [0,128]/128
+        const getShade=(c,r)=>{
+          const H=(g.heights[r]&&g.heights[r][c])||0;
+          // P1=upper(r-1,c), P2=right(r,c+1), P3=lower-left(r+1,c-1), P4=lower(r+1,c)
+          const P1=(g.heights[r-1]&&g.heights[r-1][c])||0;
+          const P2=(g.heights[r]&&g.heights[r][c+1])||0;
+          const P3=(g.heights[r+1]&&g.heights[r+1][c-1])||0;
+          const P4=(g.heights[r+1]&&g.heights[r+1][c])||0;
+          const shade=64+9*(P1-H)-3*(P2-H)-6*(P3-H)-9*(P4-H);
+          return Math.max(0,Math.min(128,shade))/128;
+        };
+        const addV=(c,r,t)=>{
+          const{x,y}=nodeIso(c,r,ox,oy,g.heights);
+          floats[idx++]=x;floats[idx++]=y;
+          floats[idx++]=(t+0.5)/WGL_ATLAS_W; // u: center of terrain's atlas pixel
+          floats[idx++]=0.5;                 // v: center of 1-pixel-tall atlas
+          floats[idx++]=getShade(c,r);       // Gouraud shade
+        };
+        for(let row=0;row<rows;row++) for(let col=0;col<cols;col++){
+          const t=g.map[row][col];
+          // t1: (col,row)→(col,row+1)→(col+1,row)
+          if(row<rows-1&&col<cols-1){addV(col,row,t);addV(col,row+1,t);addV(col+1,row,t);}
+          else{addV(col,row,t);addV(col,row,t);addV(col,row,t);} // degenerate
+          // t2: (col,row)→(col+1,row)→(col+1,row-1)
+          if(col<cols-1&&row>0){addV(col,row,t);addV(col+1,row,t);addV(col+1,row-1,t);}
+          else{addV(col,row,t);addV(col,row,t);addV(col,row,t);} // degenerate
+        }
+        gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+        gl.bufferData(gl.ARRAY_BUFFER,floats,gl.DYNAMIC_DRAW);
+        glSt.vertexCount=cols*rows*6;
+        console.log('[WebGL] VBO built:',glSt.vertexCount,'vertices');
+        vboDirtyRef.current=false;
+      }
+      // Draw WebGL terrain
+      const{gl,prog,buf,tex,aPosLoc,aTexLoc,aShLoc,uResLoc,uScrollLoc,uZoomLoc,uTexLoc,vertexCount}=glSt;
+      const wglCv=webglRef.current;
+      gl.viewport(0,0,wglCv.width,wglCv.height);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.useProgram(prog);
+      // u_resolution = half canvas dimensions: vertex at (0,0)→clip(-1,-1), at (W,H)→clip(1,-1) after y-flip
+      gl.uniform2f(uResLoc,wglCv.width/2,wglCv.height/2);
+      gl.uniform2f(uScrollLoc,viewport.offsetX,viewport.offsetY);
+      gl.uniform1f(uZoomLoc,viewport.scale);
+      gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,tex);gl.uniform1i(uTexLoc,0);
+      const STRIDE=20;
+      gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+      gl.enableVertexAttribArray(aPosLoc);gl.vertexAttribPointer(aPosLoc,2,gl.FLOAT,false,STRIDE,0);
+      gl.enableVertexAttribArray(aTexLoc);gl.vertexAttribPointer(aTexLoc,2,gl.FLOAT,false,STRIDE,8);
+      gl.enableVertexAttribArray(aShLoc);gl.vertexAttribPointer(aShLoc,1,gl.FLOAT,false,STRIDE,16);
+      gl.drawArrays(gl.TRIANGLES,0,vertexCount);
+      // Clear 2D canvas to transparent so WebGL terrain shows through
+      ctx.clearRect(0,0,W,H);
+    } else {
+      // ── Canvas 2D terrain fallback (no WebGL) ──────────────────────
+      ctx.fillStyle="#1a2810";ctx.fillRect(0,0,W,H);
+    }
     ctx.save();
     ctx.scale(viewport.scale,viewport.scale);
     ctx.translate(-viewport.offsetX,-viewport.offsetY);
@@ -1084,35 +1261,26 @@ export default function Settlers2(){
     // Height-adjusted iso position
     const iH=(c,r)=>nodeIso(c,r,ox,oy,g.heights);
 
-    ctx.imageSmoothingEnabled=false;
-    // ── Pass 1: Terrain triangles ──
-    // For each node (col,row), draw two triangles:
-    //   t1 (RSU): node(col,row) → node(col,row+1) → node(col+1,row) - bottom triangle
-    //   t2 (USD): node(col,row) → node(col+1,row) → node(col+1,row-1) - right triangle
-    for(let row=0;row<ROWS;row++) for(let col=0;col<COLS;col++){
-      const t=g.map[row][col];
-      const pat=(t===T.WATER)?null:tp[t];
-      const n0=iH(col,row);
-      const fallback=TC[t]?TC[t][0]:TC[T.GRASS][0];
-      const fill=pat||(t===T.WATER?'#1e6ea8':fallback);
-
-      // Triangle t1: this → below-left → below-right
-      if(row<ROWS-1 && col<COLS-1){
-        const n1=iH(col,row+1), n2=iH(col+1,row);
-        ctx.beginPath();
-        ctx.moveTo(n0.x,n0.y);ctx.lineTo(n1.x,n1.y);ctx.lineTo(n2.x,n2.y);ctx.closePath();
-        ctx.fillStyle=fill;ctx.fill();
+    // ── Pass 1: Terrain triangles (Canvas 2D fallback when WebGL unavailable) ──
+    if(!glSt){
+      ctx.imageSmoothingEnabled=false;
+      for(let row=0;row<ROWS;row++) for(let col=0;col<COLS;col++){
+        const t=g.map[row][col];
+        const pat=(t===T.WATER)?null:tp[t];
+        const n0=iH(col,row);
+        const fallback=TC[t]?TC[t][0]:TC[T.GRASS][0];
+        const fill=pat||(t===T.WATER?'#1e6ea8':fallback);
+        if(row<ROWS-1&&col<COLS-1){
+          const n1=iH(col,row+1),n2=iH(col+1,row);
+          ctx.beginPath();ctx.moveTo(n0.x,n0.y);ctx.lineTo(n1.x,n1.y);ctx.lineTo(n2.x,n2.y);ctx.closePath();
+          ctx.fillStyle=fill;ctx.fill();}
+        if(col<COLS-1&&row>0){
+          const n1=iH(col+1,row),n2=iH(col+1,row-1);
+          ctx.beginPath();ctx.moveTo(n0.x,n0.y);ctx.lineTo(n1.x,n1.y);ctx.lineTo(n2.x,n2.y);ctx.closePath();
+          ctx.fillStyle=fill;ctx.fill();}
       }
-
-      // Triangle t2: this → below-right → right
-      if(col<COLS-1 && row>0){
-        const n1=iH(col+1,row), n2=iH(col+1,row-1);
-        ctx.beginPath();
-        ctx.moveTo(n0.x,n0.y);ctx.lineTo(n1.x,n1.y);ctx.lineTo(n2.x,n2.y);ctx.closePath();
-        ctx.fillStyle=fill;ctx.fill();
-      }
+      ctx.imageSmoothingEnabled=true;
     }
-    ctx.imageSmoothingEnabled=true;
 
     // ── Pass 2: Overlays (territory, roads, water) using diamond shapes ──
     for(let row=0;row<ROWS;row++) for(let col=0;col<COLS;col++){
@@ -1740,6 +1908,7 @@ export default function Settlers2(){
     g.figures=[];g.nextFigId=0;
     // Centre viewport on HQ
     centreViewportOnHQ();
+    vboDirtyRef.current=true; // rebuild WebGL terrain VBO for new map
     setMsg(`Loaded: ${title||'WLD Map'} (${width}\u00d7${height})`);
     fu(n=>n+1);
   },[]);
@@ -1864,11 +2033,17 @@ export default function Settlers2(){
         {/* Canvas */}
         <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",
           background:"linear-gradient(#1a2810,#162008)",position:"relative"}}>
-          <div style={{position:"relative"}}>
+          <div style={{position:"relative",width:CW,height:CH}}>
+            {/* WebGL terrain canvas (z-index 0, behind 2D canvas) */}
+            <canvas ref={webglRef} width={CW} height={CH}
+              style={{position:"absolute",top:0,left:0,zIndex:0,imageRendering:"pixelated",
+                border:"1px solid #2a3a18",borderRadius:2,pointerEvents:"none"}} />
+            {/* 2D canvas for sprites/buildings/figures/UI (z-index 1, transparent background) */}
             <canvas ref={cvRef} width={CW} height={CH} onMouseMove={onMove} onClick={onClick}
               onContextMenu={onContextMenu}
               onMouseDown={onMouseDown} onMouseUp={onMouseUp} onMouseLeave={onMouseLeave}
               style={{cursor:roadMode?"crosshair":"default",imageRendering:"pixelated",
+                position:"absolute",zIndex:1,
                 border:"1px solid #2a3a18",borderRadius:2}} />
             {/* ── BUILDING POPUP ──────────────────────── */}
             {popup&&<div style={{...popStyle,zIndex:10}} onClick={e=>e.stopPropagation()}>

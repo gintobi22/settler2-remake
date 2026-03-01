@@ -178,6 +178,8 @@ function parseWLDMap(arrayBuffer){
       height:blocks[0][i],
       terrainRSU:mapTerrain(texRSU&0x3F),
       terrainLSD:mapTerrain(texLSD&0x3F),
+      terrainRSUId:texRSU&0x3F,
+      terrainLSDId:texLSD&0x3F,
       harbor:!!(texRSU&0x40)||!!(texLSD&0x40),
       buildQuality:(blocks[8][i]<=5?blocks[8][i]:0),
       object:decodeObject(blocks[4][i],blocks[5][i]),
@@ -259,19 +261,49 @@ void main(){
   gl_FragColor=vec4(texColor.rgb*brightness,texColor.a);
 }`;
 
-// Placeholder terrain atlas: 6×1 texture, one representative colour per terrain type.
-// NOTE: TEX5.LBM is not yet loaded in this codebase.
-// Colours are sampled from TERR_HEX (first pixel) and TC fallbacks.
-// T.GRASS=0, T.FOREST=1, T.MOUNTAIN=2, T.WATER=3, T.SAND=4, T.MEADOW=5
+// Terrain atlas: 35×1 texture, one colour per WLD terrain ID (indices 0–34).
+// UV index maps directly to WLD terrain ID — no remapping needed.
+const _FB=0x4b,_FBG=0x7b,_FBB=0x0f; // fallback green for unused IDs
 const WGL_ATLAS_PIXELS=new Uint8Array([
-  0x4b,0x7b,0x0f,0xff, // 0 GRASS   — first pixel of TERR_HEX[0]
-  0x73,0x9f,0x1f,0xff, // 1 FOREST  — first pixel of TERR_HEX[1]
-  0x9f,0x83,0x5b,0xff, // 2 MOUNTAIN— first pixel of TERR_HEX[2]
-  0x29,0x71,0xa6,0xff, // 3 WATER   — S2 ocean blue rgb(41,113,166)
-  0xc3,0x9f,0x7f,0xff, // 4 SAND    — first pixel of TERR_HEX[4]
-  0x6a,0x9a,0x38,0xff, // 5 MEADOW  — TC[T.MEADOW][0]
+  0x8c,0xb8,0x4b,0xff, //  0 Savannah
+  0x9f,0x83,0x5b,0xff, //  1 Mountain 1
+  0xe8,0xe8,0xe8,0xff, //  2 Snow
+  0x3a,0x5c,0x2a,0xff, //  3 Swamp
+  0xc3,0x9f,0x7f,0xff, //  4 Desert 1
+  0x29,0x71,0xa6,0xff, //  5 Water
+  0x30,0x80,0xb0,0xff, //  6 Buildable Water
+  0xb8,0x90,0x60,0xff, //  7 Desert 2
+  0x4b,0x7b,0x0f,0xff, //  8 Meadow 1
+  0x5a,0x8a,0x18,0xff, //  9 Meadow 2
+  0x6a,0x9a,0x28,0xff, // 10 Meadow 3
+  0x8a,0x70,0x50,0xff, // 11 Mountain 2
+  0x7a,0x60,0x40,0xff, // 12 Mountain 3
+  0x6a,0x50,0x30,0xff, // 13 Mountain 4
+  0xb0,0x98,0x3c,0xff, // 14 Steppe
+  0x73,0x9f,0x1f,0xff, // 15 Flower Meadow
+  0xc8,0x40,0x10,0xff, // 16 Lava
+  0xa0,0x80,0xc0,0xff, // 17 Silver/Magenta
+  0x7a,0x90,0x60,0xff, // 18 Mountain Meadow
+  0x20,0x60,0xa0,0xff, // 19 Water variant
+  _FB,_FBG,_FBB,0xff,  // 20 unused
+  _FB,_FBG,_FBB,0xff,  // 21 unused
+  0xb8,0x30,0x00,0xff, // 22 Lava variant
+  _FB,_FBG,_FBB,0xff,  // 23 unused
+  _FB,_FBG,_FBB,0xff,  // 24 unused
+  _FB,_FBG,_FBB,0xff,  // 25 unused
+  _FB,_FBG,_FBB,0xff,  // 26 unused
+  _FB,_FBG,_FBB,0xff,  // 27 unused
+  _FB,_FBG,_FBB,0xff,  // 28 unused
+  _FB,_FBG,_FBB,0xff,  // 29 unused
+  _FB,_FBG,_FBB,0xff,  // 30 unused
+  _FB,_FBG,_FBB,0xff,  // 31 unused
+  _FB,_FBG,_FBB,0xff,  // 32 unused
+  _FB,_FBG,_FBB,0xff,  // 33 unused
+  0x8a,0x70,0x50,0xff, // 34 Buildable Mountain
 ]);
-const WGL_ATLAS_W=6,WGL_ATLAS_H=1;
+const WGL_ATLAS_W=35,WGL_ATLAS_H=1;
+// Maps T.* enum values to WLD terrain IDs for procedural maps
+const TERR_T_TO_ID=[8,8,1,5,4,10]; // GRASS=0→8,FOREST=1→8,MOUNTAIN=2→1,WATER=3→5,SAND=4→4,MEADOW=5→10
 function figDir(fromC,fromR,toC,toR){
   const dc=Math.sign(toC-fromC),dr=Math.sign(toR-fromR);
   return DIR_MAP[dc+','+dr]??1;
@@ -721,6 +753,8 @@ export default function Settlers2(){
 
   useEffect(()=>{let cnt=0;const FIG_KEYS=Object.keys(FIG_SPRITES);const TOTAL=2+FIG_KEYS.length;const done=()=>{cnt++;if(cnt===TOTAL){
     const map=generateMap(),heights=generateHeights(map),hx=Math.floor(COLS/2),hy=Math.floor(ROWS/2);
+    const terrainRSUIds=Array.from({length:ROWS},(_,r)=>Array.from({length:COLS},(_,c)=>TERR_T_TO_ID[map[r][c]]??8));
+    const terrainLSDIds=Array.from({length:ROWS},(_,r)=>Array.from({length:COLS},(_,c)=>TERR_T_TO_ID[map[r][c]]??8));
     const ter=new Set();
     for(let dy=-HQ_RAD;dy<=HQ_RAD;dy++) for(let dx=-HQ_RAD;dx<=HQ_RAD;dx++){
       if(Math.abs(dx)+Math.abs(dy)<=HQ_RAD+1){let nx=hx+dx,ny=hy+dy;
@@ -730,7 +764,8 @@ export default function Settlers2(){
     // Create HQ building and its flag
     const hqFlag = {id:0, col:hx+1, row:hy, buildingIdx:0, goods:[]};
     gs.current={
-      map, heights, buildings:[{type:"hq",col:hx,row:hy,timer:0,flagId:0}],
+      map, heights, terrainRSUIds, terrainLSDIds,
+      buildings:[{type:"hq",col:hx,row:hy,timer:0,flagId:0}],
       territory:ter, goods, tick:0,
       flags:[hqFlag], roads:[], nextFlagId:1,
       figures:[], nextFigId:0,
@@ -1183,13 +1218,14 @@ export default function Settlers2(){
           floats[idx++]=getShade(c,r);       // Gouraud shade
         };
         for(let row=0;row<rows;row++) for(let col=0;col<cols;col++){
-          const t=g.map[row][col];
+          const tRSU=g.terrainRSUIds?.[row]?.[col]??TERR_T_TO_ID[g.map[row][col]]??8;
+          const tLSD=g.terrainLSDIds?.[row]?.[col]??TERR_T_TO_ID[g.map[row][col]]??8;
           // t1: (col,row)→(col,row+1)→(col+1,row)
-          if(row<rows-1&&col<cols-1){addV(col,row,t);addV(col,row+1,t);addV(col+1,row,t);}
-          else{addV(col,row,t);addV(col,row,t);addV(col,row,t);} // degenerate
+          if(row<rows-1&&col<cols-1){addV(col,row,tRSU);addV(col,row+1,tRSU);addV(col+1,row,tRSU);}
+          else{addV(col,row,tRSU);addV(col,row,tRSU);addV(col,row,tRSU);} // degenerate
           // t2: (col,row)→(col+1,row)→(col+1,row-1)
-          if(col<cols-1&&row>0){addV(col,row,t);addV(col+1,row,t);addV(col+1,row-1,t);}
-          else{addV(col,row,t);addV(col,row,t);addV(col,row,t);} // degenerate
+          if(col<cols-1&&row>0){addV(col,row,tLSD);addV(col+1,row,tLSD);addV(col+1,row-1,tLSD);}
+          else{addV(col,row,tLSD);addV(col,row,tLSD);addV(col,row,tLSD);} // degenerate
         }
         gl.bindBuffer(gl.ARRAY_BUFFER,buf);
         gl.bufferData(gl.ARRAY_BUFFER,floats,gl.DYNAMIC_DRAW);
@@ -1875,6 +1911,8 @@ export default function Settlers2(){
     const newMap=Array.from({length:height},()=>Array.from({length:width},()=>T.GRASS));
     const newHeights=Array.from({length:height},()=>Array.from({length:width},()=>0));
     const newBQ=Array.from({length:height},()=>Array.from({length:width},()=>0));
+    const newRSUIds=Array.from({length:height},()=>Array.from({length:width},()=>8));
+    const newLSDIds=Array.from({length:height},()=>Array.from({length:width},()=>8));
     for(let row=0;row<height;row++) for(let col=0;col<width;col++){
       const node=nodes[row*width+col];
       newHeights[row][col]=Math.round(node.height/HEIGHT_FACTOR);
@@ -1884,6 +1922,8 @@ export default function Settlers2(){
       else if(node.terrainRSU==='water'||node.terrainRSU==='snow') newMap[row][col]=T.WATER;
       else newMap[row][col]=T.GRASS;
       newBQ[row][col]=node.buildQuality;
+      newRSUIds[row][col]=node.terrainRSUId??TERR_T_TO_ID[newMap[row][col]]??8;
+      newLSDIds[row][col]=node.terrainLSDId??TERR_T_TO_ID[newMap[row][col]]??8;
     }
     const newObjects=Array.from({length:height},()=>Array.from({length:width},()=>null));
     for(let row=0;row<height;row++) for(let col=0;col<width;col++){
@@ -1902,6 +1942,7 @@ export default function Settlers2(){
     goods.boards=6;goods.stones=6;goods.wood=4;goods.bread=2;goods.water=2;
     const hqFlag={id:0,col:Math.min(hx+1,width-1),row:hy,buildingIdx:0,goods:[]};
     g.map=newMap;g.heights=newHeights;g.wldBQ=newBQ;g.objects=newObjects;
+    g.terrainRSUIds=newRSUIds;g.terrainLSDIds=newLSDIds;
     g.buildings=[{type:"hq",col:hx,row:hy,timer:0,flagId:0}];
     g.territory=ter;g.goods=goods;g.tick=0;
     g.flags=[hqFlag];g.roads=[];g.nextFlagId=1;

@@ -1991,11 +1991,10 @@ export default function Settlers2(){
     const handler=e=>{
       e.preventDefault();
       const dir=e.deltaY<0?1:-1;
-      const newScale=Math.max(ZOOM_MIN,Math.min(ZOOM_MAX,viewport.scale+dir*ZOOM_STEP));
-      const r=cv.getBoundingClientRect();
-      const ox=e.clientX-r.left,oy=e.clientY-r.top;
-      const mouseWX=ox/viewport.scale+viewport.offsetX;
-      const mouseWY=oy/viewport.scale+viewport.offsetY;
+      const oldScale=viewport.scale;
+      const newScale=Math.max(ZOOM_MIN,Math.min(ZOOM_MAX,oldScale+dir*ZOOM_STEP));
+      const ox=e.offsetX,oy=e.offsetY;
+      const{wx:mouseWX,wy:mouseWY}=screenToWorld(ox,oy,viewport);
       viewport.scale=newScale;
       viewport.offsetX=clampOffset(mouseWX-ox/newScale,'x');
       viewport.offsetY=clampOffset(mouseWY-oy/newScale,'y');
